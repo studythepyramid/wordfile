@@ -9,8 +9,6 @@
 
 
 import datetime
-import shutil
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -58,37 +56,6 @@ def log_words_to_history(words: list[str]):
         )
 
 
-def resolve_pager_cmd() -> list[str]:
-    """Prefer batcat (Ubuntu/debian bat); fall back to less."""
-    if shutil.which("batcat"):
-        return ["batcat", "-p", "-l", "markdown", "--paging=always"]
-    if shutil.which("bat"):
-        return ["bat", "-p", "-l", "markdown", "--paging=always"]
-    return ["less", "-R"]
-
-
-def pager(content: str) -> None:
-    """Send formatted text to a terminal pager."""
-    if not content.strip():
-        return
-
-    pager_cmd = resolve_pager_cmd()
-    pager_name = pager_cmd[0]
-    print(f"\nOpening {pager_name}...", file=sys.stderr)
-
-    try:
-        proc = subprocess.Popen(pager_cmd, stdin=subprocess.PIPE, text=True)
-        assert proc.stdin is not None
-        proc.stdin.write(content)
-        proc.stdin.close()
-        proc.wait()
-    except BrokenPipeError:
-        # User quit the pager before reading everything.
-        pass
-    except FileNotFoundError:
-        print(content)
-
-
 def format_stream_line(line: str, wrapper: textwrap.TextWrapper) -> str:
     if line.strip() == "":
         return ""
@@ -97,39 +64,46 @@ def format_stream_line(line: str, wrapper: textwrap.TextWrapper) -> str:
 
 # Context Construction: The Tutor Persona and Challenge Logic
 System_Instruction = """You are an expert English linguistics tutor.
-The user will provide a list of words. For EACH word, provide:
+The user will provide a list of words. For EACH word,
+explain it immediately according to the following styles:
 
 1. A concise, clear definition.
 2. A practical example sentence.
+3. If the words has typos, correct them.
 
-After defining the user's words, analyze their approximate vocabulary difficulty tier.
+After defining the user's words,
+analyze their approximate vocabulary difficulty tier.
 Show the k band of the words in the list.
-Then, generate 'CHALLENGE WORDS' section where you suggest 3 to 5 new words that are
-slightly more advanced or share a structural/thematic root with the provided words.
+Then, generate a small list of 'CHALLENGE WORDS',
+where you suggest 1 to 5 new words that are
+slightly more advanced or share a common root with the provided words.
+
+After the 'CHALLENGE WORDS' list, do nothing else,
+leave user to do their own research.
 """
 
 Prompt_Content = """Please explain these words and
-challenge me with 1 to 3 similar words: {words_display}"""
+challenge me with 1 to 3 similar words: {words_list_str}"""
 
 
 def query():
     if len(sys.argv) < 2:
-        print("Usage: vocafile <word1> [word2] [word3] ...")
-        print("Example: vocafile slit slot slab slap snip")
+        print("Usage: wordfile <word1> [word2] [word3] ...")
+        print("Example: wordfile slit slot slab slap snip")
         sys.exit(1)
 
     target_words = sys.argv[1:]
-    words_display = ", ".join(target_words)
+    words_list_str = ", ".join(target_words)
 
-    print(f"📚 Logging new words to {VOCABULARY_LOG}...")
+    print(f"📚 Logging new words {words_list_str}, to {VOCABULARY_LOG}...")
     log_words_to_history(target_words)
 
-    print(f"Querying LLM {MODEL_NAME} for: {words_display}...", file=sys.stderr)
+    print(f"Querying LLM {MODEL_NAME} for: {words_list_str}.", file=sys.stderr)
 
-    prompt_content = Prompt_Content.format(words_display=words_display)
+    prompt_content = Prompt_Content.format(words_list_str=words_list_str)
 
     try:
-        # Stream from Ollama, collect wrapped lines, then open the pager.
+        # Stream from Ollama and print wrapped lines.
         stream = ollama.chat(
             model=MODEL_NAME,
             messages=[
@@ -145,7 +119,9 @@ def query():
 
         wrapper = textwrap.TextWrapper(width=LINE_WIDTH)
         buffer = ""
-        pager_lines: list[str] = [f"# Words: {words_display}", ""]
+
+        print(f"# Words: {words_list_str}")
+        print()
 
         for chunk in stream:
             buffer += chunk["message"]["content"]
@@ -155,7 +131,6 @@ def query():
                     break
                 line = buffer[:idx]
                 formatted = format_stream_line(line, wrapper)
-                pager_lines.append(formatted)
                 if formatted == "":
                     print("")
                 else:
@@ -164,13 +139,10 @@ def query():
 
         if buffer:
             formatted = format_stream_line(buffer, wrapper)
-            pager_lines.append(formatted)
             print(formatted)
 
-        pager_body = "\n".join(pager_lines)
         footer = "\n" + "-" * LINE_WIDTH
         print(footer)
-        # pager(pager_body + footer)
 
     except Exception as e:
         print(f"\n❌ Ollama Communication Failure: {e}", file=sys.stderr)
